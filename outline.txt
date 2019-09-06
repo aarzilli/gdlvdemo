@@ -1,0 +1,362 @@
+Hello, my name is Alessandro Arzilli, I've been a maintainer of Delve since
+2015. In case you don't know, Delve is a debugger for Go. It has a command
+line interface, similar to gdb, and in 2016 I wrote a graphical user
+interface for Delve, called Gdlv, and today I'm going to give a demo.
+
+# PART 1: TOY DEBUGGING EXAMPLE
+
+Since Gdlv is a debugger we need a program to debug. So before we get into
+debugging let me show you another program that I brought. It's a toy program
+with a toy bug, so that we can use a debugger to figure it out.
+
+	$ cd whodunit
+	$ ls
+	main.go  main_test.go  supp.go
+	$
+
+This is the program and we can compile it, simply, like this:
+
+	$ go build
+
+And then run it:
+
+	$ ./whodunit
+	success 0 0 32
+	$ ./whodunit
+	success 24 0 23
+
+And it looks like everything works fine. But once in a while it will crash,
+it's a fairly rare crash so it would be pretty tedious to sit here and rerun
+whodunit until it crashes but luckily I wrote a test for this and the test
+crashes every time.
+
+	$ go test
+	--- FAIL: TestAComplexFunction (0.00s)
+	panic: runtime error: invalid memory address or nil pointer dereference [recovered]
+		panic: runtime error: invalid memory address or nil pointer dereference
+	[signal SIGSEGV: segmentation violation code=0x1 addr=0x0 pc=0x4f6a8b]
+	
+	goroutine 7 [running]:
+	testing.tRunner.func1(0xc0000a4100)
+		/usr/local/go/src/testing/testing.go:874 +0x3a3
+	panic(0x51b140, 0x630140)
+		/usr/local/go/src/runtime/panic.go:679 +0x1b2
+	_/home/a/Dropbox/me/golab.io.2019/gdlvdemo/whodunit.TestAComplexFunction(0xc0000a4100)
+		/home/a/Dropbox/me/golab.io.2019/gdlvdemo/whodunit/main_test.go:8 +0x3b
+	testing.tRunner(0xc0000a4100, 0x54ec70)
+		/usr/local/go/src/testing/testing.go:909 +0xc9
+	created by testing.(*T).Run
+		/usr/local/go/src/testing/testing.go:960 +0x350
+	exit status 2
+	FAIL	_/home/a/Dropbox/me/golab.io.2019/gdlvdemo/whodunit	0.004s
+
+As you can see from the panic it's a nil pointer dereference. Now, nil
+pointer dereferences tend to be very easy to debug and if I showed you the
+source code for this program I think you could figure out what's happening
+pretty quickly. After all, this is a toy bug in a toy program.
+
+But... this is a demo for a debugger so we're going to do something you
+should never do in real life, we're going to use a debugger to find a bug
+*before* thinking about the problem.
+
+Never do this, thinking is the most important debugging tool you have, you
+should always think first. But we're going to do it now.
+
+	$ gdlv test
+	
+What this does is:
+
+1. it compiles the tests for the program with optimizations disabled
+2. it runs the tests under the debugger
+
+The interface you see on screen should be familiar if you've used something
+like WinDBG or similar stand-alone graphical debuggers. If it isn't I'll
+give you a quick tour now.
+
+At the top left is the source window, this is going to show the source code
+that's currently executing. I know that now it's showing some scary assembly
+but that's just because the program is currently stopped in a place that
+doesn't have source. Trust me, it'll be filled with Go source in a minute.
+
+At the bottom lefft is a command window, you can type commands on this
+command line and the debugger will execute it. The syntax is similar to the
+command line of Delve, if you've used that.
+
+At the top right I have two lists. The first one is a stack trace, at the
+moment it lists three stack frames. And the second one is just a list of
+currently active breakpoints. There's two of them but those are predefined
+breakpoints used to catch unrecovered panics, not anything that we did set.
+
+Finally at the bottom right there's the variables window. It will show the
+value of variables visible from the current frame and you can also use it to
+se the value of arbitrary expressions. It doesn't show anything at the
+moment because we aren't stopped in an interesting place.
+
+The first thing we're going to do is use the most useful debugger command
+there is 'continue'.
+
+I do that by pressing ESC to focus the command line, then the 'c' key and
+then ENTER. If you don't have anything to do all day you can also type the
+full word 'continue' but I prefer the shortcut.
+
+Just like before the program panicked, but this time the debugger noticed
+that nobody recovered the panic and stopped execution just before the
+program finishes crashing, so that we can inspect the memory.
+
+The source window and the stacktrace both filled up. And to the right we
+even see one local variable, the panic that's currently crashing the
+program. And we can even examine it.
+
+If we scroll down in the stack trace we can skip all the internal runtime
+functions that are executing and finally find where the crash happened in
+user code. And we see that we just called `aComplexFunction` and now we're
+trying to call `execute` but it didn't work because we tried to dereference
+`q` that happens to be nil. 
+
+This doesn't help us much, we'd have to look inside `aComplexFunction` to
+understand.
+
+So let's restat the program using the `r` command and set a breakpoint on
+`aComplexFunction`.
+
+	> r
+	> b aComplexFunction
+	> c
+	
+While we're here we can use `n` to step over (it stands for `next`), `s` to
+step into a function call and `o` to step out.
+
+There's also keybindings associated with this, you can use alt-down to step
+into, alt-up to step out, and alt-right to step over.
+
+Unfortunately in this case those commands won't help you much because the
+crash doesn't happen on the first iteration. In fact I would suggest that,
+when you are using a debugger to look for a bug, you use next, step and
+stepout extremely sparingly. In most cases they're going to waste your time.
+Those commands are useful in a different context, I'll show it to you in the
+second part of the talk.
+
+So let's let the program crash and look for a different debugging strategy:
+
+	> c
+
+If we look at the variables window the bug happens at the iteration where
+`i` has the value 47. So what we'd want to do is stop here, on the line that
+calls `aComplexFunction` but when `i == 47`. I'll show you three ways of
+doing this.
+
+Number 1 we set a breakpoint on this line
+	
+	right click on the line -> Set breakpoint
+
+then we make it a conditional breakpoint
+
+	right click on the line -> Edit breakpoint -> "i == 47" in condition field -> OK
+
+Now we can restart the program, continue and we'll be on the line we wanted
+to be on the 48th iteration.
+
+Second way of doing this requires editing the program. Import `runtime` and then write:
+
+	if i == 47 {
+		runtime.Breakpoint()
+	}
+	
+What this is, is a hardcoded breakpoint. When the runtime.Breakpoint line is
+executed the program will actually call the debugger, that is: if you are
+running it inside a debugger.
+
+	$ gdlv test
+	> c
+
+NOw you're probably thinking that this is a strictly inferior option
+compared to the previous one: because you have to edit and recompile the
+program. But there are actually two reasons to do this:
+
+1. you can do anything in that conditional. Delve's expression language is
+much more limited, but if you write that little piece of Go code you can do
+anything.
+2. it's *way faster*. There's just a really big performance penalty to
+stopping the program to evaluate its condition, and Delve isn't even very
+smart about doing this, so in a tight loop it will slow down *a lot*.
+
+For the final way we're going to undo the changes we did to the program
+first.
+
+The third way is to record the execution of the program and then play it
+back. To do this you need three extra things: linux, amd64 and mozilla rr
+installed. If you have all three things you can do this:
+
+	$ gdlv rr:test
+
+What this will do is it will compile the tests, record their execution and
+the replay the recording inside the debugger. Since it's a recording we can
+play it both forward (the normal way) or backwards: with the `rewind`
+command.
+
+	> c
+
+Once its crashed we look for our user frame, we place a breakpoint on the
+call to `aComplexFunction` and then use rewind.
+And this got us back to the line we wanted on the 48th iteration.
+
+For this problem this is a bit of an overkill but if you have a bug that was
+a lot more non-deterministic this can come in handy.
+
+Now, we could step inside this function, and finally find out who's the
+culprit. But I think I'll leave that to you, actually.
+
+# PART 2 MEATIER EXAMPLE
+
+In my opinion there are actually two things that you can use a debugger for.
+The first one is, as everybody knows, find bugs in programs. But there's
+also another use for debuggers, one that people I don't think know about.
+And that's reading code. Debuggers are actually great for reading code you
+aren't familiar with. You can use an IDE for that, and the IDE will tell you
+the type of variables and where things are defined but if you read code
+inside a debugger you won't just have those features you will also have an
+*example* of what the data *actually* looks like and you can see how any
+given function *actually* gets called.
+
+When I was told about this I was skeptical about this but it is really
+useful, I wholeheartedly recommend it.
+
+So, let's use gdlv to take a look at a program that's 100% bug free and that
+we've all, probably, used at least once. Let's debug the Go compiler.
+
+To debug the Go compiler we first must figure out how to... compile the
+compiler. As it turns out that's actually very simple:
+
+	$ cd /usr/local/go/src/cmd/compile
+	$ go build
+
+This makes a binary called 'compile' and that's the Go compiler. You can use
+this binary to compile a Go program, for example:
+
+	$ ./compile ~/gdlvdemo/thirth.go
+	$ ls *.o
+	thirth.o
+	
+Note that this is just the Go compiler, its output is an object file. To
+actually make an executable you'd have to build and call the linker, too.
+But we're not going to go there today. Just the compiler is enough.
+
+Now that we know how to compile and run the compiler we can debug it:
+
+	$ gdlv debug -c=4 ~/gdlvdemo/thirth.go
+
+What this will do is compile the compiler, because it's the current
+directory, then pass '-c=4' and '~/gdlvdemo/thirth.go' as arguments to it, and debug the
+resulting process. 
+I'm passing -c=4 because I want the compiler to compile functions concurrently for a thing I'll show later.
+But in fact let's do the slightly more complicated thing
+and actually record the execution:
+	
+	$ gdlv rr:debug ~/gdlvdemo/thirth.go
+
+So we can prove that recording works on non-trivial programs too.
+
+This will take a while to run, because compiling the compiler is a bit
+slower but we should be fine.
+
+When you're using a debugger to read code that's where next, step and
+stepover come in handy.
+
+We can also set a random breakpoint and use `rw`, so that we can prove that
+we did actually record the execution.
+
+We can't actually step through all this code now, it would just take too
+long, so I'll skip a bunch of compilation phases all the way down to
+something interesting. 
+
+Here's 'Phase 8', you can see from the comments that SSA has been
+initialized and here it's actually going to compile toplevel functions.
+We'll set a breakpoint here and hit continue.
+
+The code here is ranging over this `xtop` variable, that looks interesting
+but if we look in the variables panel it's not there! The reason is that the
+variables panel actually contains only local variables by default (that is:
+local to the current function) and xtop is a global variable.
+But this isn't a problem, we can just add xtop to the variables panel using
+the 'display' command, which is abbreviated to 'dp':
+
+	> dp xtop
+
+What we have here is a syntax tree, of sorts, we can explore it by clicking
+around. Note that the argument to display doesn't have to be a simple
+variable name, it can be almost any expression. For example if we just
+wanted to se element 3 of xtop we could modify this expression as such:
+
+	Right click on xtop -> Edit expression -> "xtop[3]"
+
+Believe it or not but I actually did contribute code to the compiler a
+couple of times and to figure out how to do that I had to run the debugger
+over the compiler. Every time I did that I had the problem that this syntax
+tree here is just really hard to navigate. For exapmle, each one of the
+entries of xtop is actually a function definition but you can't even easily
+find their name. I'll show you where the function definition is:
+
+	Click on one of the entries -> Click on Func -> Click on Nname -> Click on Sym
+
+This is 4 levels deep, and I can't even fit a single function definition on
+screen like this.
+What I would like is, when I have these nodes collapsed, instead of having
+this useless informations displayed there, instead I'd like to have the name
+of the function.
+
+We can do that by using a custom formatter:
+
+	Right click -> Custom formatter for type -> "(func:" + x[0].Func.Nname.Sym.Name + ")"
+
+The language used here isn't Go, it's actually a subset of python called
+starlark, that's why we need the weird 0 subscript, it's because `x` is a
+pointer and we need to dereference it explicitly.
+
+And now we can see at a glance which function we're looking at and we can
+look inside the main function, and inside Nbody we have the body of the main
+function and if we look in it we see that there are two statements.
+Unfortunately those are nodes but they aren't functions so our custom
+formatter breaks. Ideally we'd like to see the value of the Op field for
+those and we can do that like this:
+
+	"(func:" + x[0].Func.Nname.Sym.Name + ")" if x[0].Op == "ODCLFUNC (46)" else "(" + x[0].Op + ")"
+
+This is as complicated as custom formatters get. If you want more
+complicated stuff the best way to do it is to write a formatting function in
+the init file and then just call it in the custom formatter expression.
+
+Let's say I was looking for a specific function inside xtop. In this case
+its a pretty small slice and with the custom formatter we made I can just
+glance through it and find what I'm looking for. For example if I was
+looking for the `swapOp` function, here it is, at index 7.
+But sometimes you are looking for specific items inside slices with
+thousands of items. Gdlv can help you with that with the find_array command,
+to find swapOp inside xtop we would execute this command
+
+	> find_array "xtop", lambda x: x[0].Func.Nname.Sym.Name == "swapOp"
+	found 7
+
+This command, find_array, isn't actually a builtin command, to demonstrate
+the scripting capabilities of gdlv I implemented it with the starlark
+scripting language, and we can take a look at how it is implemented:
+
+	$ less ~/.config/gdlv.star
+
+Here it is, it takes two arguments the name of an array (or slice) variable
+and a predicate, which is a function that we can call and returns either
+true or false. What it does is it evaluates the array variable with `eval`
+and then ranges through it calling the predicate on each element and returns
+when the predicate returns true.
+
+The final thing I'm going to show is how to debug multiple goroutines. Remember that we passed -c=4 to the compiler, so that it will compile functions concurrently. The function that runs concurrently is called `compileSSA` so let's set a breakpoint on it and see who calls it:
+
+	> b compileSSA
+	> c
+
+To see a list of goroutines we open the goroutines window:
+
+	> win goroutines
+
+And by clicking around we can switch between goroutines and look at their
+stack and see what they're doing.
+
